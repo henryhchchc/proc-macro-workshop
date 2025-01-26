@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data, DeriveInput, Fields};
+use syn::{parse_macro_input, Data, DeriveInput, Fields, Lit, LitStr};
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -38,6 +38,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     }).collect();
 
+    let field_setters: Vec<_> = fields.named.iter().map(|field| {
+        let ident = field.ident.as_ref().unwrap();
+        let error_msg = LitStr::new(&format!("field {} is not set", ident), ident.span());
+        let literal = Lit::Str(error_msg);
+        quote! {
+            #ident: self.#ident.clone().ok_or(Box::<dyn std::error::Error>::from(#literal.to_string()))?
+        }
+    }).collect();
+
     let generated = quote! {
 
         impl #ident {
@@ -54,6 +63,12 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         impl #builder_ident {
             #(#setter_methods)*
+
+            pub fn build(&mut self) -> Result<#ident, Box<dyn std::error::Error>> {
+                Ok(#ident {
+                    #(#field_setters),*
+                })
+            }
         }
     };
     generated.into()
