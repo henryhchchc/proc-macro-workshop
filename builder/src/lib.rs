@@ -1,6 +1,9 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data, DeriveInput, Fields, Lit, LitStr};
+use syn::{
+    parse_macro_input, AngleBracketedGenericArguments, Data, DeriveInput, Fields, GenericArgument,
+    Lit, LitStr, Path, PathArguments, PathSegment, Type, TypePath,
+};
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -16,34 +19,53 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let Fields::Named(fields) = strukt.fields else {
         panic!("Builder derive only supports named fields");
     };
-    let builder_fields: Vec<_> = fields.named.iter().map(|field| {
-        let ident = field.ident.as_ref().unwrap();
-        let ty = &field.ty;
-        quote! { #ident: Option<#ty> }
-    }).collect();
-
-    let builder_init: Vec<_> = fields.named.iter().map(|field| {
-        let ident = field.ident.as_ref().unwrap();
-        quote! { #ident: None }
-    }).collect();
-
-    let setter_methods: Vec<_> = fields.named.iter().map(|field| {
-        let ident = field.ident.as_ref().unwrap();
-        let ty = &field.ty;
-        quote! {
-            pub fn #ident(&mut self, #ident: #ty) -> &mut Self {
-                self.#ident = Some(#ident);
-                self
+    let builder_fields: Vec<_> = fields
+        .named
+        .iter()
+        .map(|field| {
+            let ident = field.ident.as_ref().unwrap();
+            match try_get_option_generics(&field.ty) {
+                Ok(inner_ty) => quote! { #ident: Option<#inner_ty> },
+                Err(original_ty) => quote! { #ident: Option<#original_ty> },
             }
-        }
-    }).collect();
+        })
+        .collect();
+
+    let builder_init: Vec<_> = fields
+        .named
+        .iter()
+        .map(|field| {
+            let ident = field.ident.as_ref().unwrap();
+            quote! { #ident: None }
+        })
+        .collect();
+
+    let setter_methods: Vec<_> = fields
+        .named
+        .iter()
+        .map(|field| {
+            let ident = field.ident.as_ref().unwrap();
+            let ty = match try_get_option_generics(&field.ty) {
+                Ok(inner_ty) => inner_ty,
+                Err(original_ty) => original_ty,
+            };
+            quote! {
+                pub fn #ident(&mut self, #ident: #ty) -> &mut Self {
+                    self.#ident = Some(#ident);
+                    self
+                }
+            }
+        })
+        .collect();
 
     let field_setters: Vec<_> = fields.named.iter().map(|field| {
         let ident = field.ident.as_ref().unwrap();
         let error_msg = LitStr::new(&format!("field {} is not set", ident), ident.span());
         let literal = Lit::Str(error_msg);
-        quote! {
-            #ident: self.#ident.clone().ok_or(Box::<dyn std::error::Error>::from(#literal.to_string()))?
+        if try_get_option_generics(&field.ty).is_ok() {
+            quote! { #ident: self.#ident.clone() }
+        } else {
+            quote! { #ident: self.#ident.clone().ok_or(Box::<dyn std::error::Error>::from(#literal.to_string()))? }
         }
     }).collect();
 
@@ -72,4 +94,32 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     };
     generated.into()
+}
+
+fn try_get_option_generics(ty: &Type) -> Result<&Type, &Type> {
+    if let Type::Path(TypePath {
+        qself: None,
+        path: Path {
+            leading_colon: None,
+            segments,
+        },
+    }) = ty
+    {
+        if segments.len() == 1 {
+            let segment = segments.first().unwrap();
+            if let PathSegment {
+                ident,
+                arguments:
+                    PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }),
+            } = segment
+            {
+                if ident == "Option" && args.len() == 1 {
+                    if let Some(GenericArgument::Type(inner_ty)) = args.first() {
+                        return Ok(inner_ty);
+                    }
+                }
+            }
+        }
+    }
+    Err(ty)
 }
