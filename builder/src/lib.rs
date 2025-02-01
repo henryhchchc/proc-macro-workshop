@@ -31,14 +31,19 @@ pub fn derive(input: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let builder_init: Vec<_> = fields
-        .named
-        .iter()
-        .map(|field| {
+    let builder_method = {
+        let builder_fields_init = fields.named.iter().map(|field| {
             let ident = field.ident.as_ref().unwrap();
             quote! { #ident: None }
-        })
-        .collect();
+        });
+        quote! {
+            pub fn builder() -> #builder_ident {
+                #builder_ident {
+                    #(#builder_fields_init),*
+                }
+            }
+        }
+    };
 
     let setter_methods: Vec<_> = fields
         .named
@@ -65,18 +70,14 @@ pub fn derive(input: TokenStream) -> TokenStream {
         if try_get_option_generics(&field.ty).is_ok() {
             quote! { #ident: self.#ident.clone() }
         } else {
-            quote! { #ident: self.#ident.clone().ok_or(Box::<dyn std::error::Error>::from(#literal.to_string()))? }
+            quote! { #ident: self.#ident.clone().ok_or(#literal.to_string())? }
         }
     }).collect();
 
     let generated = quote! {
 
         impl #ident {
-            pub fn builder() -> #builder_ident {
-                #builder_ident {
-                    #(#builder_init),*
-                }
-            }
+            #builder_method
         }
 
         #vis struct #builder_ident {
